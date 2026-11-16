@@ -25,7 +25,7 @@
   /* ---------------------------------------------------------------- state */
   function fresh() {
     const stops = {};
-    STOPS.forEach((s) => (stops[s.id] = { terms: [], layers: [], mapAns: null, tags: {}, read: {}, pressure: null, source: null, ev: [], because: "", think: "", done: false }));
+    STOPS.forEach((s) => (stops[s.id] = { terms: [], layers: [], faultSeen: false, mapAns: null, tags: {}, read: {}, pressure: null, source: null, ev: [], because: "", think: "", done: false }));
     return {
       names: ["", ""], view: { s: "hub" }, stops, compare: {}, rank: RANK_DEFAULT.slice(), rule: "",
       sv: { n: 4, names: ["", "", "", "", ""], own: {}, cur: 0, borders: {}, strait: null, deals: [], pred: {}, sel: null },
@@ -33,7 +33,7 @@
     };
   }
   let S = load() || fresh();
-  let UI = { term: null, layer: 0, fault: false, hex: null, flip: false, clue: 0, showHQ: false, svTab: "draw", svLayer: { lang: false, rel: false, res: true, old: false, out: true, sea: false }, confirmReset: false, copied: false };
+  let UI = { help: false, svTool: "paint", confirmClear: false, term: null, layer: 0, fault: false, hex: null, flip: false, clue: 0, showHQ: false, svTab: "draw", svLayer: { lang: false, rel: false, res: true, old: false, out: true, sea: false }, confirmReset: false, copied: false };
   function load() { try { const s = JSON.parse(localStorage.getItem(KEY)); return s && s.stops ? s : null; } catch (e) { return null; } }
   function save() { try { localStorage.setItem(KEY, JSON.stringify(S)); } catch (e) { /* storage off */ } }
   function go(view) { S.view = view; UI.term = null; UI.hex = null; UI.flip = false; UI.showHQ = false; UI.fault = false; UI.layer = 0; UI.clue = 0; save(); render(); window.scrollTo(0, 0); }
@@ -52,10 +52,26 @@
   function stepOk(stop, step) {
     const d = st(stop.id);
     if (step === "brief") return Object.keys(stop.terms).every((t) => d.terms.includes(t));
-    if (step === "map") return stop.map.layers.every((l) => d.layers.includes(l.key)) && d.mapAns != null;
+    if (step === "map") return stop.map.layers.every((l) => d.layers.includes(l.key)) && !!d.faultSeen && d.mapAns != null;
     if (step === "scene") return stop.scene.clues.every((c, i) => d.tags[i]);
     if (step === "read") return readOk(stop);
     return true;
+  }
+  function tasks(stop, step) {
+    const d = st(stop.id), T = [];
+    if (step === "brief") { const n = Object.keys(stop.terms).length, k = Object.keys(stop.terms).filter((t) => d.terms.includes(t)).length; T.push([`Tap all ${n} blue terms (${k} of ${n})`, k === n]); }
+    if (step === "map") { const n = stop.map.layers.length, k = stop.map.layers.filter((l) => d.layers.includes(l.key)).length;
+      T.push([`Look at every layer (${k} of ${n})`, k === n], ["Turn on Fault lines", !!d.faultSeen], ["Answer the map question", d.mapAns != null]); }
+    if (step === "scene") { const k = Object.keys(d.tags).length; T.push([`Tag all 4 sensors (${k} of 4)`, k === 4]); }
+    if (step === "read") { const n = stop.voices.length, k = stop.voices.filter((v) => d.read[v.id]).length;
+      T.push([n > 1 ? `Rate each side (${k} of ${n})` : "Rate the surface", k === n], ["Pick the stored pressure", !!d.pressure], ["Pick the main source", !!d.source]);
+      if (stop.scene) T.push([`Pick 2 sensors as evidence (${d.ev.length} of 2)`, d.ev.length === 2]);
+      T.push(["Explain in a full sentence", d.because.trim().length >= 15, "because"]); }
+    return T;
+  }
+  function taskbar(stop, step) {
+    const T = tasks(stop, step);
+    return `<div class="taskbar" role="status" aria-live="polite"><span class="kicker">Your tasks</span>${T.map((t) => `<span class="task ${t[1] ? "done" : ""}" ${t[2] ? 'id="task-' + t[2] + '"' : ""}><i aria-hidden="true">${t[1] ? "✓" : ""}</i>${esc(t[0])}</span>`).join("")}</div>`;
   }
   function readOk(stop) {
     const d = st(stop.id);
@@ -132,7 +148,15 @@
 
   /* ---------------------------------------------------------------- shared chrome */
   function top(sub, right) {
-    return `<header class="top"><div class="brand"><b>FAULT LINES</b><span>${esc(sub)}</span></div>${right || ""}</header>`;
+    return `<header class="top"><div class="brand"><b>FAULT LINES</b><span>${esc(sub)}</span></div><div class="row" style="gap:18px"><button type="button" class="helpbtn" data-act="help" aria-expanded="${UI.help}">? Readings key</button>${right || ""}</div></header>${UI.help ? helpPanel() : ""}`;
+  }
+  function helpPanel() {
+    return `<div class="overlay" data-act="help"><div class="helpcard" role="dialog" aria-modal="true" aria-labelledby="helptitle" data-stop>
+      <div class="row" style="justify-content:space-between"><h2 id="helptitle">Readings key</h2><button type="button" class="btn" data-act="help">Close</button></div>
+      <p>The physical and cultural landscapes are like plates. A border that follows them sits on stable ground. A border that cuts across them builds pressure.</p>
+      <h3>Surface reading: what is happening on the ground</h3><div class="keygrid">${SCALE.map((s) => `<b>${s.n} · ${s.label}</b><span>${esc(s.desc)}</span>`).join("")}</div>
+      <h3>Stored pressure: stress under the surface</h3><div class="keygrid">${PRESSURE.map((p) => `<b>${esc(p.key)}</b><span>${esc(p.desc)}</span>`).join("")}</div>
+      <h3>Pressure sources</h3><div class="keygrid">${SOURCES.map((x) => `<b>${esc(x.key)}</b><span>AMSCO term: ${esc(x.term)}</span>`).join("")}</div></div></div>`;
   }
   const hubLink = `<button type="button" class="linkish" data-act="hub">Back to the route</button>`;
   function teamLine() {
@@ -170,10 +194,9 @@
           <label class="stack" style="gap:4px;font-size:14px">Partner B<input type="text" data-bind="names.1" value="${esc(S.names[1])}" autocomplete="off"></label>
         </div>
         <div class="row">${nx ? `<button type="button" class="btn primary" data-act="open" data-id="${nx.id}">${done ? "Continue: " : "Start: "}${esc(nx.title)}</button>` : `<button type="button" class="btn primary" data-act="hazard">Open the hazard map</button>`}
-        <button type="button" class="btn" data-act="howto">How readings work</button></div>
-        ${UI.howto ? howto() : ""}
+        <button type="button" class="btn" data-act="help">How readings work</button></div>
       </div>
-      <div class="art">${pic("img/hub_hero.png", "Hero illustration: a surveyor at a brass seismograph under a sun-and-stars sky")}</div>
+      <div class="art">${pic("img/hub_hero.jpg", "Hero illustration: a surveyor at a brass seismograph under a sun-and-stars sky")}</div>
     </section>
     <section class="stack" style="padding:0 28px 28px;gap:14px">
       <div class="row" style="justify-content:space-between"><h2>Your route: warm-up + 4 matchups</h2>
@@ -218,7 +241,9 @@
     if (step !== "read") next = `<button type="button" class="btn primary" data-act="step" data-step="${stop.steps[idx + 1]}" ${ok || UNLOCK ? "" : "disabled"}>Next: ${STEP_NAMES[stop.steps[idx + 1]]}</button>`;
     else if (!UI.showHQ) next = `<button type="button" class="btn primary" data-act="log" ${ok || UNLOCK ? "" : "disabled"}>Log reading</button>`;
     else next = `<button type="button" class="btn primary" data-act="afterlog">${afterLogLabel(stop)}</button>`;
-    return `${top(sub, hubLink)}${nav}${body}<footer class="foot">${prev}<span class="hint">${ok ? "" : hint}</span>${next}</footer>`;
+    const left = tasks(stop, step).filter((t) => !t[1]).length;
+    const status = UI.showHQ ? "Reading logged. Nice work." : left ? `${left} task${left > 1 ? "s" : ""} left` : "All tasks done. Go on!";
+    return `${top(sub, hubLink)}${nav}${UI.showHQ ? "" : taskbar(stop, step)}${body}<footer class="foot">${prev}<span class="hint ${left ? "" : "ready"}">${status}</span>${next}</footer>`;
   }
   function afterLogLabel(stop) {
     const ms = matchupStops(stop.matchup);
@@ -230,15 +255,15 @@
   function storyHTML(stop) {
     const d = st(stop.id);
     return stop.story.map((p) => "<p>" + esc(p).replace(/\[\[([^\]|]+)(?:\|([^\]]+))?\]\]/g, (m0, term, shown) =>
-      `<button type="button" class="term ${d.terms.includes(term) ? "seen" : ""}" data-act="term" data-term="${esc(term)}">${esc(shown || term)}</button>`) + "</p>").join("");
+      `<button type="button" class="term ${d.terms.includes(term) ? "seen" : ""} ${UI.term === term ? "open" : ""}" aria-expanded="${UI.term === term}" data-act="term" data-term="${esc(term)}">${esc(shown || term)}</button>`) + "</p>"
+      + (UI.term && (p.includes("[[" + UI.term + "]]") || p.includes("[[" + UI.term + "|")) ? `<div class="defbox" role="status"><b>${esc(UI.term)}</b>${esc(stop.terms[UI.term])}</div>` : "")).join("");
   }
   function briefStep(stop) {
-    const def = UI.term ? `<div class="defbox" role="status"><b>Definition · ${esc(UI.term)}</b>${esc(stop.terms[UI.term])}</div>` : "";
     const voices = stop.voices.map((v) => `<div class="voice"><div class="pic">${pic(v.img, (v.noVoice ? "Empty bench facing a fence" : v.name + " portrait"))}</div>
       <div class="stack" style="gap:4px"><strong>${esc(v.name)}${v.age ? ", " + v.age : ""} · ${esc(v.side)}</strong><span class="small">${esc(v.where)}${v.noVoice ? "" : " (composite character)"}</span><q>${esc(v.quote)}</q></div></div>`).join("");
     const facts = stop.facts.map((f) => `<div class="fact"><b>${esc(f[0])}</b><span>${esc(f[1])}</span></div>`).join("");
     return `<main class="main">${bg(stop.bg.a, "Background A (day): " + stop.bgLabel.a)}
-      <section class="panel grow stack"><h1>${esc(stop.heading)}</h1><div class="story">${storyHTML(stop)}</div>${def}</section>
+      <section class="panel grow stack"><h1>${esc(stop.heading)}</h1><p class="bigidea"><b>Big idea:</b> ${esc(stop.bigIdea)}</p><div class="story">${storyHTML(stop)}</div></section>
       <aside class="panel side stack"><span class="kicker">Voices from each side</span>${voices}<span class="kicker">Field numbers</span><div class="facts">${facts}</div></aside>
     </main>`;
   }
@@ -249,7 +274,7 @@
       + `<button type="button" class="chip fault ${UI.fault ? "on" : ""}" aria-pressed="${UI.fault}" data-act="fault">Fault lines</button>`;
     const src = stop.source;
     const sourceCard = !UI.flip
-      ? `<div class="card ink"><span class="kicker acc">Core sample · source</span><div class="art">${pic(src.img, "Source document")}</div>
+      ? `<div class="card ink"><span class="kicker acc">Core sample · read the source</span><div class="art">${pic(src.img, "Source document")}</div>
          <strong>${esc(src.title)}</strong><span style="font-size:15px;line-height:1.45">${esc(src.excerpt)}</span>
          <button type="button" class="btn" data-act="flip">Drill down: who, when, why</button></div>`
       : `<div class="card ink"><span class="kicker acc">Behind the source</span><span><b>Who:</b> ${esc(src.who)}</span><span><b>When:</b> ${esc(src.when)}</span><span><b>Why:</b> ${esc(src.why)}</span>
@@ -264,7 +289,7 @@
     return `<main class="main">${bg(stop.bg.b, "Background B (aerial): " + stop.bgLabel.b)}
       <section class="panel grow stack"><div class="row" style="justify-content:space-between"><h1>Peel back the layers</h1></div>
         <div class="row" role="group" aria-label="Map layers">${chips}</div>
-        ${svg}<div class="legend">${legend}<span><i style="background:#1E2A2F"></i>Border</span>${UI.fault ? '<span><i style="background:#B4461A"></i>Fault line</span>' : ""}</div>
+        <p class="small">Tap any hex to see what is there.</p>${svg}<div class="legend">${legend}<span><i style="background:#1E2A2F"></i>Border</span>${UI.fault ? '<span><i style="background:#B4461A"></i>Fault line</span>' : ""}</div>
         ${UI.fault ? `<p class="small">${esc(m.faultNote)}</p>` : ""}
       </section>
       <aside class="panel clear side stack">${sourceCard}
@@ -298,20 +323,20 @@
   function readStep(stop) {
     const d = st(stop.id), avg = avgSurface(stop);
     const groups = stop.voices.map((v) => `<div class="row"><span style="width:170px;font-size:15px">${esc(v.name)}${v.noVoice ? " (no voice)" : ""}</span>
-      <div class="row" role="radiogroup" aria-label="${esc(v.name)} surface reading" style="gap:6px">${SCALE.map((s) => `<button type="button" class="num ${d.read[v.id] === s.n ? "on" : ""}" aria-pressed="${d.read[v.id] === s.n}" title="${s.label}" data-act="rd" data-v="${v.id}" data-n="${s.n}">${s.n}</button>`).join("")}</div></div>`).join("");
+      <div class="row" role="radiogroup" aria-label="${esc(v.name)} surface reading" style="gap:6px">${SCALE.map((s) => `<button type="button" class="num lab ${d.read[v.id] === s.n ? "on" : ""}" aria-pressed="${d.read[v.id] === s.n}" aria-label="${s.n}, ${s.label}" data-act="rd" data-v="${v.id}" data-n="${s.n}"><b>${s.n}</b><small>${s.label}</small></button>`).join("")}</div></div>`).join("");
     const press = PRESSURE.map((p) => `<button type="button" class="chip ${d.pressure === p.key ? "on" : ""}" aria-pressed="${d.pressure === p.key}" title="${esc(p.desc)}" data-act="press" data-v="${esc(p.key)}">${esc(p.key)}</button>`).join("");
     const srcs = SOURCES.map((s) => `<button type="button" class="chip acc ${d.source === s.key ? "on" : ""}" aria-pressed="${d.source === s.key}" data-act="src" data-v="${esc(s.key)}">${esc(s.key)}</button>`).join("");
     const ev = stop.scene ? `<div class="row" style="gap:14px;font-size:14px">${stop.scene.clues.map((c, i) => `<label class="row" style="gap:6px"><input type="checkbox" data-act="ev" data-i="${i}" ${d.ev.includes(i) ? "checked" : ""} ${!d.ev.includes(i) && d.ev.length >= 2 ? "disabled" : ""}> ${i + 1} · ${esc(c.label)}</label>`).join("")}</div>` : "";
     const hq = UI.showHQ ? hqPanel(stop) : "";
     return `<main class="main">${bg(stop.bg.c, "Background C (dusk): " + stop.bgLabel.c)}
-      <section class="panel clear side stack" style="flex:1 1 400px"><h1 style="color:#fff">Read the seismograph</h1>
-        <div class="seis"><div class="row" style="justify-content:space-between;font-family:var(--mono);font-size:12px;color:var(--line2)"><span>STATION: ${esc(stop.title.toUpperCase())}</span><span>LIVE TRACE</span></div>
+      <section class="panel clear side stack" style="flex:1 1 400px">
+        <div class="seis"><h1 style="color:#fff;font-size:24px">Read the seismograph</h1><div class="row" style="justify-content:space-between;font-family:var(--mono);font-size:12px;color:var(--line2)"><span>STATION: ${esc(stop.title.toUpperCase())}</span><span>LIVE TRACE</span></div>
           <div class="paper">${trace(avg)}</div>
           <div class="meter"><div><span>SURFACE (AVERAGE)</span><b>${avg ? avg.toFixed(1) + " · " + scaleLabel(avg) : "–"}</b></div><div><span>STORED PRESSURE</span><b>${esc(d.pressure || "–")}</b></div></div></div>
         ${hq}</section>
       <section class="grow stack" style="position:relative;z-index:1;min-width:0">
-        <fieldset><legend>1. Surface reading for each side (1 Stable to 5 Major Quake)</legend>${groups}</fieldset>
-        <fieldset><legend>2. Stored pressure along the line</legend><div class="row">${press}</div></fieldset>
+        <fieldset><legend>1. Surface reading for each side</legend>${groups}</fieldset>
+        <fieldset><legend>2. Stored pressure along the line</legend><div class="row">${press}</div>${d.pressure ? `<span class="small">${esc((PRESSURE.find((p) => p.key === d.pressure) || {}).desc)}</span>` : ""}</fieldset>
         <fieldset><legend>3. Main pressure source</legend><div class="row">${srcs}</div></fieldset>
         <fieldset><legend>4. ${stop.scene ? "Evidence: pick 2 sensors, then explain" : "Explain your readings"}</legend>${ev}
           <label for="because" class="small">Because...</label><textarea id="because" rows="3" data-bind="stops.${stop.id}.because">${esc(d.because)}</textarea></fieldset>
@@ -620,7 +645,10 @@
     if (/\.because$/.test(b) && S.view.s === "stop") {
       const stop = STOP_BY_ID[S.view.id], btn = document.querySelector('[data-act="log"]');
       if (btn) btn.disabled = !(readOk(stop) || UNLOCK);
-      const hint = document.querySelector(".foot .hint"); if (hint && readOk(stop)) hint.textContent = "";
+      const tk = document.getElementById("task-because"), ok = S.stops[stop.id].because.trim().length >= 15;
+      if (tk) { tk.classList.toggle("done", ok); tk.querySelector("i").textContent = ok ? "✓" : ""; }
+      const left = tasks(stop, "read").filter((t) => !t[1]).length, hint = document.querySelector(".foot .hint");
+      if (hint) { hint.textContent = left ? `${left} task${left > 1 ? "s" : ""} left` : "All tasks done. Go on!"; hint.classList.toggle("ready", !left); }
     }
     if (/^sv\.names\./.test(b)) {
       const i = b.split(".")[2];
@@ -642,12 +670,12 @@
     const stop = S.view.s === "stop" ? STOP_BY_ID[S.view.id] : null, d = stop ? st(stop.id) : null;
     switch (act) {
       case "hub": go({ s: "hub" }); return;
-      case "howto": UI.howto = !UI.howto; break;
+      case "help": if (e.target.closest("[data-stop]") && !e.target.closest('button[data-act="help"]')) return; UI.help = !UI.help; break;
       case "open": { const s = STOP_BY_ID[id]; const firstOpen = s.steps.find((x) => !stepOk(s, x)) || s.steps[0]; go({ s: "stop", id, step: isDone(id) ? s.steps[0] : firstOpen }); return; }
       case "step": S.view.step = t.getAttribute("data-step"); UI.term = null; UI.hex = null; UI.flip = false; UI.fault = false; UI.layer = 0; UI.clue = 0; UI.showHQ = st(S.view.id).done && S.view.step === "read"; if (S.view.step === "map") markLayer(); save(); render(); window.scrollTo(0, 0); return;
       case "term": { const term = t.getAttribute("data-term"); UI.term = term; if (!d.terms.includes(term)) d.terms.push(term); break; }
       case "layer": UI.layer = i; UI.hex = null; markLayer(); break;
-      case "fault": UI.fault = !UI.fault; break;
+      case "fault": UI.fault = !UI.fault; if (UI.fault) d.faultSeen = true; break;
       case "flip": UI.flip = !UI.flip; break;
       case "mapans": d.mapAns = i; break;
       case "clue": UI.clue = i; break;
